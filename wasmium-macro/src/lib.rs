@@ -173,8 +173,9 @@ pub fn import_module(input: TokenStream) -> TokenStream {
 	// Generate the unsafe extern "C" declarations for each import function
     let ffi_imports = imports.iter().map(|import| {
         let name = &import.0;
+		let name_str = name.to_string();
         quote! {
-            #[link_name = stringify!(#name)]
+            #[link_name = #name_str]
             pub fn #name(ptrlen: u64) -> u64;
         }
     });
@@ -207,8 +208,10 @@ pub fn import_module(input: TokenStream) -> TokenStream {
                     let out_ptr = (out >> 32) as u32;
                     let out_len = (out & 0xffff_ffff) as u32;
                     let out_bytes = unsafe { std::slice::from_raw_parts(out_ptr as *const u8, out_len as usize) };
-                    crate::rmp_serde::from_slice(out_bytes)
-                        .expect("Failed to deserialize output from import")
+                    let result = crate::rmp_serde::from_slice(out_bytes)
+                        .expect("Failed to deserialize output from import");
+					crate::free(out_ptr, out_len);
+                    result
                 }
             }, // end match on return type with Some(ret)
             None => quote! {
