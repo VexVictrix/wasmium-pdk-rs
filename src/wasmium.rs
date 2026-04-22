@@ -1,5 +1,5 @@
 /// Allocates guest memory and returns its pointer as `u32`.
-#[unsafe(no_mangle)]
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 pub extern "C" fn alloc(size: u32) -> u32 {
 	let mut buf = Vec::with_capacity(size as usize);
 	let ptr: *mut u8 = buf.as_mut_ptr();
@@ -8,7 +8,7 @@ pub extern "C" fn alloc(size: u32) -> u32 {
 }
 
 /// Frees memory previously allocated by [`alloc`].
-#[unsafe(no_mangle)]
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 pub extern "C" fn free(ptr: u32, size: u32) {
 	unsafe { let _ = Vec::from_raw_parts(ptr as *mut u8, 0, size as usize); }
 }
@@ -27,7 +27,10 @@ pub fn get_ptr_and_len<T>(bytes: &T) -> u64 where T: AsRef<[u8]> {
 }
 
 use std::sync::Once;
-use wasmium_macro::{import_module, wasmium_fn};
+use wasmium_macro::wasmium_fn;
+
+#[cfg(not(all(target_arch = "wasm32", test)))]
+use wasmium_macro::import_module;
 
 /// Runtime one-time initialization entrypoint invoked by the host.
 #[wasmium_fn]
@@ -56,6 +59,11 @@ fn install_panic_hook() {
 	});
 }
 
+#[cfg(not(all(target_arch = "wasm32", test)))]
 import_module!("sys", (
 	log(&str),
 ));
+
+#[cfg(all(target_arch = "wasm32", test))]
+fn log(_msg: &str) {}
+
