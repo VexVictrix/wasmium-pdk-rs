@@ -1,6 +1,6 @@
 [package]
 name = "wasmium-pdk-rs"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
@@ -13,8 +13,8 @@ wasmium-macro = { path = "./wasmium-macro" }
 paste = "1.0"
 
 [dev-dependencies]
-wasmium_runtime = { package = "wasmium", git = "https://github.com/vexvictrix/wasmium", tag = "v0.1.1" }
+wasmium_runtime = { package = "wasmium", git = "https://github.com/vexvictrix/wasmium", tag = "v0.2.0" }
 example-plugin = { path = "./example-plugin" }
 
-[target.wasm32-unknown-unknown.dev-dependencies]
+[target.'cfg(any(target_arch = "wasm32", target_arch = "wasm64"))'.dev-dependencies]
 wasm-bindgen-test = "0.3"

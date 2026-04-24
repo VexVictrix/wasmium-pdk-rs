@@ -1,7 +1,6 @@
 mod wasmium;
 
 pub use wasmium::*;
-pub use wasmium_macro::*;
 pub use paste;
 pub use rmp_serde;
 pub use serde;
@@ -13,7 +12,7 @@ fn test() {
 	
 	use wasmium_runtime::*;
 
-	let mut example_plugin = WasmModule::new(example_plugin_bytes, vec![
+	let mut example_plugin = WasmiumModule::new(example_plugin_bytes, vec![
 		HostFunction::new("concat_example", move |input: (String, String)| {
 			let (a, b) = input;
 			return a + &b;
@@ -42,7 +41,7 @@ mod wasm_tests {
 
 		let example_plugin_bytes = include_bytes!("../example-plugin/target/wasm32-unknown-unknown/debug/example_plugin.wasm");
 
-		let example_plugin = WasmModule::new(example_plugin_bytes, vec![
+		let mut example_plugin = WasmiumModule::new(example_plugin_bytes, vec![
 			HostFunction::new("concat_example", move |input: (String, String)| {
 				let (a, b) = input;
 				return a + &b;

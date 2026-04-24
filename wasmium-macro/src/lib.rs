@@ -7,11 +7,6 @@ use syn::{
 
 // --- Begin wasmium_fn macro ---
 
-/// Generates an extern ABI wrapper around a Rust function.
-///
-/// The wrapper accepts `(ptr, len)` input bytes encoded in MessagePack,
-/// deserializes function arguments, executes the original body, then
-/// serializes the return value back to `(out_ptr, out_len)` packed as `u64`.
 #[proc_macro_attribute]
 pub fn wasmium_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
@@ -41,22 +36,25 @@ pub fn wasmium_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
 	// Generate different wrapper code based on the number of typed arguments
     let expanded = match typed_args.as_slice() {
 
-        // No arguments: ignore ptr/len, call block with no input
-        [] => quote! {
+        // No arguments: ignore ptr, call block with no input
+		[] => quote! {
 			mod #wrapper_mod {
 				use super::*;
 				#[unsafe(no_mangle)]
-				#fn_vis extern "C" fn #fn_name(_ptr: u32, _len: u32) -> u64 {
+		        #fn_vis extern "C" fn #fn_name(_ptr: u64) -> u64 {
 					let result = (move || #fn_block)();
-					let out_bytes = rmp_serde::to_vec(&result).expect("Failed to serialize");
-					let out_ptr = out_bytes.as_ptr() as u32;
-					let out_len = out_bytes.len() as u32;
+		            let payload = rmp_serde::to_vec(&result).expect("Failed to serialize");
+		            let mut out_bytes = Vec::with_capacity(8 + payload.len());
+		            out_bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+                    out_bytes.extend_from_slice(&payload);
+
+					let out_ptr = out_bytes.as_ptr() as u64;
 					std::mem::forget(out_bytes);
-					((out_ptr as u64) << 32) | (out_len as u64)
+		            out_ptr
 				}
-				}	#fn_vis fn #fn_name() #fn_output #fn_block
+			}	#fn_vis fn #fn_name() #fn_output #fn_block
 			// end unit type variant of __#fn_name module and original function
-        }, // end no argument match arm
+		}, // end no argument match arm
 
         // Single argument: deserialize directly as that type
         [pt] => {
@@ -66,15 +64,19 @@ pub fn wasmium_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
 				mod #wrapper_mod {
 					use super::*;
 					#[unsafe(no_mangle)]
-					#fn_vis extern "C" fn #fn_name(ptr: u32, len: u32) -> u64 {
-						let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+					#fn_vis extern "C" fn #fn_name(ptr: u64) -> u64 {
+						let length_bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, 8) };
+						let len = u64::from_le_bytes(length_bytes.try_into().expect("Failed to convert length to u64"));
+						let bytes = unsafe { std::slice::from_raw_parts((ptr + 8) as *const u8, len as usize) };
 						let decoded: #arg_type = rmp_serde::from_slice(bytes).expect("Failed to deserialize");
 						let result = (move |#arg_pat: #arg_type| #fn_block)(decoded);
-						let out_bytes = rmp_serde::to_vec(&result).expect("Failed to serialize");
-						let out_ptr = out_bytes.as_ptr() as u32;
-						let out_len = out_bytes.len() as u32;
+                        let payload = rmp_serde::to_vec(&result).expect("Failed to serialize");
+                        let mut out_bytes = Vec::with_capacity(8 + payload.len());
+                        out_bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+						out_bytes.extend_from_slice(&payload);
+						let out_ptr = out_bytes.as_ptr() as u64;
 						std::mem::forget(out_bytes);
-						((out_ptr as u64) << 32) | (out_len as u64)
+                        out_ptr
 					}
 				}	#fn_vis fn #fn_name(#arg_pat: #arg_type) #fn_output #fn_block
             } // end single type variant of __#fn_name module and original function
@@ -88,15 +90,20 @@ pub fn wasmium_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
 				mod #wrapper_mod {
 					use super::*;
 					#[unsafe(no_mangle)]
-					#fn_vis extern "C" fn #fn_name(ptr: u32, len: u32) -> u64 {
-						let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+					#fn_vis extern "C" fn #fn_name(ptr: u64) -> u64 {
+						let length_bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, 8) };
+						let len = u64::from_le_bytes(length_bytes.try_into().expect("Failed to convert length to u64"));
+						let bytes = unsafe { std::slice::from_raw_parts((ptr + 8) as *const u8, len as usize) };
 						let (#(#pats),*): (#(#types),*) = rmp_serde::from_slice(bytes).expect("Failed to deserialize");
 						let result = (move || #fn_block)();
-						let out_bytes = rmp_serde::to_vec(&result).expect("Failed to serialize");
-						let out_ptr = out_bytes.as_ptr() as u32;
-						let out_len = out_bytes.len() as u32;
+                        let payload = rmp_serde::to_vec(&result).expect("Failed to serialize");
+                        let mut out_bytes = Vec::with_capacity(8 + payload.len());
+						// Write the length of the payload as the first 8 bytes, followed by the payload itself
+                        out_bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+						out_bytes.extend_from_slice(&payload);
+						let out_ptr = out_bytes.as_ptr() as u64;
 						std::mem::forget(out_bytes);
-						((out_ptr as u64) << 32) | (out_len as u64)
+                        out_ptr
 					}
 				}	#fn_vis fn #fn_name(#(#pats: #types),*) #fn_output #fn_block
             } // end __#fn_name module and original function
@@ -107,7 +114,7 @@ pub fn wasmium_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 // --- Begin import_module macro ---
 
-/// Type alias for an import function signature, consisting of the function name, argument types, and optional return type.
+// /// Type alias for an import function signature, consisting of the function name, argument types, and optional return type.
 type ImportSignature = (Ident, Vec<Type>, Option<Type>);
 
 /// Parses an import function signature of the form `fn_name(arg1: Type1, arg2: Type2) -> RetType`.
@@ -161,6 +168,20 @@ fn sanitize_module_ident(module_name: &str) -> String {
 
 /// Generates an import module with the given name and function signatures.
 /// For each import, creates an unsafe extern "C" declaration with the appropriate link name, and a safe wrapper that handles serialization/deserialization of arguments and return values.
+
+/// Copies bytes from guest memory into an owned buffer.
+fn read_bytes(ptr: u64) -> Vec<u8> {
+	let length_bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, 8) };
+	let len = u64::from_le_bytes(length_bytes.try_into().expect("Failed to convert length to u64"));
+	unsafe { std::slice::from_raw_parts((ptr  + 8) as *const u8, len as usize).to_vec() }
+} // end fn read_bytes
+
+fn write_bytes(ptr: u64, data: &[u8]) {
+	let length_bytes = (data.len() as u64).to_le_bytes();
+	unsafe { std::ptr::copy(length_bytes.as_ptr(), ptr as *mut u8, 8); }
+	unsafe { std::ptr::copy(data.as_ptr(), (ptr + 8) as *mut u8, data.len()); }
+} // end fn write_bytes
+
 #[proc_macro]
 pub fn import_module(input: TokenStream) -> TokenStream {
 
@@ -176,7 +197,7 @@ pub fn import_module(input: TokenStream) -> TokenStream {
 		let name_str = name.to_string();
         quote! {
             #[link_name = #name_str]
-            pub fn #name(ptrlen: u64) -> u64;
+			pub fn #name(ptr: u64) -> u64;
         }
     });
 
@@ -196,34 +217,27 @@ pub fn import_module(input: TokenStream) -> TokenStream {
             _ => quote! { (#(#arg_names),*) },
         };
 
-		// Generate different wrapper code based on whether the import has a return type or not
-        match &import.2 {
-            Some(ret) => quote! {
-                pub fn #name(#(#arg_names: #args),*) -> #ret {
-                    let input = #input_tuple;
-                    let input: Vec<u8> = crate::rmp_serde::to_vec(&input)
-                        .expect("Failed to serialize input for import");
-                    let ptrlen = crate::get_ptr_and_len(&input);
-                    let out = unsafe { #ffi_module_ident::#name(ptrlen) };
-                    let out_ptr = (out >> 32) as u32;
-                    let out_len = (out & 0xffff_ffff) as u32;
-                    let out_bytes = unsafe { std::slice::from_raw_parts(out_ptr as *const u8, out_len as usize) };
-                    let result = crate::rmp_serde::from_slice(out_bytes)
-                        .expect("Failed to deserialize output from import");
-					crate::free(out_ptr, out_len);
-                    result
-                }
-            }, // end match on return type with Some(ret)
-            None => quote! {
-                pub fn #name(#(#arg_names: #args),*) {
-                    let input = #input_tuple;
-                    let input: Vec<u8> = crate::rmp_serde::to_vec(&input)
-                        .expect("Failed to serialize input for import");
-                    let ptrlen = crate::get_ptr_and_len(&input);
-                    let _ = unsafe { #ffi_module_ident::#name(ptrlen) };
-                }
-            }, // end match on return unit type
-        } // end match on any return type
+		let ret = import.2.as_ref().map_or(quote! { () }, |ret| quote! { #ret });
+
+		quote! {
+			pub fn #name(#(#arg_names: #args),*) -> #ret {
+				let input = #input_tuple;
+				let input: Vec<u8> = crate::rmp_serde::to_vec(&input)
+					.expect("Failed to serialize input for import");
+                let input_len = input.len() as u64;
+                let input_ptr = crate::wasmium_alloc(input_len + 8);
+                crate::write_bytes(input_ptr, &input);
+				let out_ptr = unsafe { #ffi_module_ident::#name(input_ptr) };
+                crate::wasmium_free(input_ptr, input_len + 8);
+                let out_bytes = crate::read_bytes(out_ptr);
+                let result = crate::rmp_serde::from_slice(&out_bytes)
+					.expect("Failed to deserialize output from import");
+                crate::wasmium_free(out_ptr, out_bytes.len() as u64 + 8);
+				result
+			}
+		}
+
+
     }); // end wrapper generation
 
 	// Generate the final token stream that defines the FFI module with the unsafe extern "C" declarations and the safe wrapper functions
